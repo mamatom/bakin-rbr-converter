@@ -63,7 +63,7 @@ impl BinWrite for LEB128 {
 }
 
 #[binrw]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,Default)]
 pub struct SizedString(
     #[br(parse_with = parse_sized_string)]
     #[bw(write_with = write_sized_string)]
@@ -149,20 +149,41 @@ pub enum EventDataType {
     
     #[br(pre_assert(code == 0x05))]
     SwitchName(SizedString),
-    
+
     #[br(pre_assert(code == 0x06))]
     Position {
         value: u128,
+        data: u32,//TODO: tobe determined if it's a u32 + u8 or u32 + SizedString
+        data2: u8,
         x: f32,
         y: f32,
         z: f32,
     },
     
+    #[br(pre_assert(code == 0x07))]
+    Array {
+        array_name:SizedString,
+        array_type:u32,
+
+        #[brw(if(0x01 == array_type.clone()))]
+        value1: u32,
+        #[brw(if(0x02 == array_type.clone()))]
+        value2:u128,
+        #[brw(if(0x03 == array_type.clone()))]
+        value3: SizedString,
+        #[brw(if(0x04 == array_type.clone()))]
+        value4: SizedString,
+        #[brw(if(0x05 == array_type.clone()))]
+        value5: SizedString,
+
+        #[brw(if(0xFF == array_type.clone()))]
+        value: u32,
+
+    },
+    
     #[br(pre_assert(code == 0x08))]
     Float(f32),
 }
-
-
 
 // Custom parser for null-terminated data section
 fn read_until_null<R: Read + Seek>(
@@ -193,18 +214,13 @@ fn parse_variables<R: Read + Seek>(
         .collect()
 }
 
+
 #[derive(Debug,Clone)]
 struct Section{
     section_length: u32,
-    
-    //#[brw(big)]
     section_type: u16,
     data: u128,
-    // test_text: SizedString,
-    //#[br(parse_with = parse_section, args(section_type.clone()))]
     section_data: SectionData,
-
-    //#[br(parse_with = parse_unparsed, args(section_length))]
     unparsed_bytes: Vec<u8>,
 }
 
@@ -301,6 +317,16 @@ enum SectionData {
         events: Vec<Event>,
         eventsheet_section_end: u16,
     },
+
+    #[br(pre_assert(code == 0x0001))]
+    EntityHeader{
+        object_name: SizedString,
+        data: u16,
+        eventsheet_condition_count: u32,
+        //TODO: not nessary if we only care about text;
+
+    },
+
     #[br(pre_assert(code == 0x000C))]
     ItemData{
         name: SizedString,
@@ -311,10 +337,9 @@ enum SectionData {
         data3: u32
     },
 
-    #[br(pre_assert(code == 0x0101))]
-    UnknownTest{
-        text: SizedString,
-    }
+    #[br(pre_assert(true))]
+    Unknown{}
+
 
 
 }
