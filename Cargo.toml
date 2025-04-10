@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 binrw = "0.14.1"
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0"
+walkdir = "2.3"
 hex = "0.4.3"
 hex-literal = "1.0.0"
 leb128 = "0.2"
