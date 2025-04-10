@@ -2,6 +2,7 @@ use std::{f32::consts::E, fmt::Error, u128, u64, usize};
 use binrw::{prelude::*, Endian::Big, NullString};
 use leb128;
 use hex_literal::hex;
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
 use binrw::{prelude::*, Endian, io::{Write,Seek, Read, SeekFrom}};
@@ -63,7 +64,7 @@ impl BinWrite for LEB128 {
 }
 
 #[binrw]
-#[derive(Debug, Clone,Default)]
+#[derive(Debug, Clone,Default,Serialize,Deserialize)]
 pub struct SizedString(
     #[br(parse_with = parse_sized_string)]
     #[bw(write_with = write_sized_string)]
@@ -114,7 +115,7 @@ fn write_sized_string<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
-#[derive(BinRead, BinWrite, Debug, Clone)]
+#[derive(BinRead, BinWrite, Debug, Clone,Serialize, Deserialize)]
 pub struct Event {
     pub event_type: u32,
     pub nest_depth: u32,
@@ -122,9 +123,10 @@ pub struct Event {
    
 }
 
-#[derive(BinRead, BinWrite, Debug, Clone)]
+#[derive(BinRead, BinWrite, Debug, Clone,Serialize, Deserialize)]
 pub struct EventData {
     #[br(parse_with = read_until_null)]
+    #[serde(serialize_with = "serialize_bytes_as_hex")]
     pub data: Vec<u8>,
     seperator: u8,
     #[br(parse_with = parse_variables, args(data.clone()))]
@@ -132,14 +134,16 @@ pub struct EventData {
 }
 
 
-#[derive(BinRead, BinWrite, Debug, Clone)]
+#[derive(BinRead, BinWrite, Debug, Clone,Serialize,Deserialize)]
 #[br(import(code: u8))]
+#[serde(tag = "type", content = "value")]
 pub enum EventDataType {
     #[br(pre_assert(code == 0x01))]
     U32(u32),
     
     #[br(pre_assert(code == 0x02))]
-    U128(u128),
+    
+    U128(#[serde(serialize_with = "serialize_u128_as_hex")] u128),
     
     #[br(pre_assert(code == 0x03))]
     Text(SizedString),
@@ -152,6 +156,7 @@ pub enum EventDataType {
 
     #[br(pre_assert(code == 0x06))]
     Position {
+        #[serde(serialize_with = "serialize_u128_as_hex")]
         value: u128,
         data: u32,//TODO: tobe determined if it's a u32 + u8 or u32 + SizedString
         data2: u8,
@@ -168,6 +173,7 @@ pub enum EventDataType {
         #[brw(if(0x01 == array_type.clone()))]
         value1: u32,
         #[brw(if(0x02 == array_type.clone()))]
+        #[serde(serialize_with = "serialize_u128_as_hex")]
         value2:u128,
         #[brw(if(0x03 == array_type.clone()))]
         value3: SizedString,
@@ -215,12 +221,15 @@ fn parse_variables<R: Read + Seek>(
 }
 
 
-#[derive(Debug,Clone)]
+#[derive(Debug,Clone,Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Section{
-    section_length: u32,
+    //section_length: u32,
     section_type: u16,
+    #[serde(serialize_with = "serialize_u128_as_hex")]
     data: u128,
     section_data: SectionData,
+    #[serde(serialize_with = "serialize_bytes_as_hex")]
     unparsed_bytes: Vec<u8>,
 }
 
@@ -251,7 +260,7 @@ impl BinRead for Section {
 
 
         Ok(Section {
-            section_length,
+            //section_length,
             section_type,
             data,
             // test_text,
@@ -270,7 +279,9 @@ impl BinWrite for Section {
         endian: binrw::Endian,
         _: Self::Args<'_>,
     ) -> BinResult<()> {
-        self.section_length.write_options(writer, endian, ())?;
+        //self.section_length.write_options(writer, endian, ())?;
+        0u32.write_options(writer, endian, ())?;
+
         self.section_type.write_options(writer, Big, ())?;
 
         let start_position:u64 = writer.stream_position().unwrap();
@@ -303,7 +314,8 @@ fn parse_section<R: Read + Seek>(
 
 
 #[binrw]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[br(import(code: u16))]
 enum SectionData {
     #[br(pre_assert(code == 0x1007))]
@@ -331,6 +343,7 @@ enum SectionData {
     ItemData{
         name: SizedString,
         note: SizedString,
+        #[serde(serialize_with = "serialize_u128_as_hex")]
         data: u128,
         data2: u8,
         description: SizedString,
@@ -339,11 +352,23 @@ enum SectionData {
 
     #[br(pre_assert(true))]
     Unknown{}
-
-
-
 }
 
+fn serialize_bytes_as_hex<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let hex_string = hex::encode(bytes);
+    serializer.serialize_str(&hex_string)
+}
+
+fn serialize_u128_as_hex<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let hex_string = format!("0x{:032x}", value);
+    serializer.serialize_str(&hex_string)
+}
 
 
 fn main() {
@@ -353,6 +378,8 @@ fn main() {
     let mut cursor = Cursor::new(event_section_hex);
     let mut test:Section = cursor.read_le().unwrap();
     println!("String: {:#?}", test);
+    let json = serde_json::to_string_pretty(&test).unwrap();
+    std::fs::write("output.json", json).unwrap();
 
    /*match test.section_data {
        SectionData::ItemData {ref mut name,ref mut note, data, data2,ref mut description, data3 } => {
