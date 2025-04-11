@@ -1,5 +1,5 @@
 use std::{fs, path::{Path, PathBuf}, u128, u64, usize};
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use binrw::{prelude::*, Endian::Big};
 use clap::{command, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -449,6 +449,9 @@ enum Commands {
         
         #[arg(short, long)]
         output: PathBuf,
+
+        #[arg(long, help = "Clear output directory before processing")]
+        clean: bool,
     },
     /// Convert JSON files back to binary RBR format
     Encode {
@@ -457,6 +460,9 @@ enum Commands {
         
         #[arg(short, long)]
         output: PathBuf,
+
+        #[arg(long, help = "Clear output directory before processing")]
+        clean: bool,
     },
 }
 
@@ -464,19 +470,21 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     
     match &cli.command {
-        Commands::Parse{input,output} => process_files(
+        Commands::Parse{input,output,clean} => process_files(
             &input,
             &output,
             "rbr",
             "json",
             parse_rbr_file,
+            *clean
         )?,
-        Commands::Encode{input,output} => process_files(
+        Commands::Encode{input,output,clean} => process_files(
             &input,
             &output,
             "json",
             "rbr",
             encode_json_to_rbr,
+            *clean
         )?,
     }
     
@@ -490,7 +498,30 @@ fn process_files(
     input_ext: &str,
     output_ext: &str,
     processor: impl Fn(&Path, &Path) -> anyhow::Result<()>,
+    clean: bool,
 ) -> anyhow::Result<()> {
+
+    
+
+    if clean{
+        let output_abs = fs::canonicalize(output_dir).unwrap_or_else(|_| output_dir.to_path_buf());
+        let input_abs = fs::canonicalize(input_dir).unwrap_or_else(|_| input_dir.to_path_buf());
+        if output_abs == input_abs {
+            return Err(anyhow!(
+                "Safety error: Input and output directories are identical ({})",
+                output_dir.display()
+            ));
+        }
+        
+        if output_dir.exists() {
+            println!("Cleaning output directory: {}", output_dir.display());
+            fs::remove_dir_all(output_dir)
+            .context("Failed to clean output directory")?;
+            fs::create_dir_all(output_dir)
+            .context("Failed to recreate output directory")?;
+        }
+    }
+
     let files: Vec<PathBuf> = WalkDir::new(input_dir)
         .into_iter()
         .filter_map(|e| e.ok())
