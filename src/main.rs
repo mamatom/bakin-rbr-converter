@@ -1,10 +1,12 @@
-use std::{f32::consts::E, fmt::{Error}, fs, path::{Path, PathBuf}, u128, u64, usize};
+use std::{fs, path::{Path, PathBuf}, u128, u64, usize};
 use anyhow::Context;
-use binrw::{prelude::*, Endian::Big, NullString};
+use binrw::{prelude::*, Endian::Big};
 use clap::{command, Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use leb128;
 use hex_literal::hex;
 use serde::{Deserialize, Serialize};
+use walkdir::WalkDir;
 use std::io::Cursor;
 
 use binrw::{Endian, io::{Write,Seek, Read, SeekFrom},helpers::until_eof};
@@ -73,15 +75,6 @@ pub struct SizedString(
     String
 );
 
-trait SetValue {
-    fn set_value(&mut self, value: String);
-}
-
-impl SetValue for SizedString {
-    fn set_value(&mut self, value: String) {
-        self.0 = value;
-    }
-}
 
 fn parse_sized_string<R: std::io::Read + std::io::Seek>(
     reader: &mut R,
@@ -262,10 +255,10 @@ impl BinRead for Section {
         let mut unparsed_bytes = vec![0; (section_length as u64 - (end_position - start_position)) as usize];
         reader.read_exact(&mut unparsed_bytes)?;
 
-        println!("unparsed bytes:");
+        /*println!("unparsed bytes:");
         for byte in unparsed_bytes.iter() {
             print!("{:02x} ", byte);
-        }
+        }*/
 
 
         Ok(Section {
@@ -294,7 +287,7 @@ impl BinWrite for Section {
         self.section_type.write_options(writer, Big, ())?;
 
         let start_position:u64 = writer.stream_position().unwrap();
-        println!("Start position: {}", start_position);
+        //println!("Start position: {}", start_position);
 
         self.data.write_options(writer, endian, ())?;
         // self.test_text.write_options(writer, endian, ())?;
@@ -302,7 +295,7 @@ impl BinWrite for Section {
         self.unparsed_bytes.write_options(writer, endian, ())?;
         
         let end_position:u64 = writer.stream_position().unwrap();
-        println!("End position: {}", end_position);
+        // println!("End position: {}", end_position);
 
         let section_length = (end_position - start_position) as u32;
         writer.seek(SeekFrom::Start(start_position - 6))?;
@@ -440,41 +433,47 @@ fn validate_header<R: Read + Seek>(reader: &mut R, endian: Endian, _: ()) -> Bin
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-    
-    #[arg(short, long)]
-    /// Input directory
-    input: PathBuf,
-    
-    #[arg(short, long)]
-    /// Output directory
-    output: PathBuf,
+
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Convert binary RBR files to JSON
-    Parse,
+    Parse {
+        #[arg(short, long)]
+        input: PathBuf,
+        
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Convert JSON files back to binary RBR format
-    Encode,
+    Encode {
+        #[arg(short, long)]
+        input: PathBuf,
+        
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     
     match &cli.command {
-        Commands::Parse => process_files(
-            &cli.input,
-            &cli.output,
+        Commands::Parse{input,output} => process_files(
+            &input,
+            &output,
             "rbr",
             "json",
             parse_rbr_file,
         )?,
-        Commands::Encode => process_files(
-            &cli.input,
-            &cli.output,
+        Commands::Encode{input,output} => process_files(
+            &input,
+            &output,
             "json",
             "rbr",
             encode_json_to_rbr,
@@ -492,24 +491,55 @@ fn process_files(
     output_ext: &str,
     processor: impl Fn(&Path, &Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    for entry in walkdir::WalkDir::new(input_dir) {
-        let entry = entry?;
-        let path = entry.path();
+    let files: Vec<PathBuf> = WalkDir::new(input_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == input_ext))
+        .map(|e| e.into_path())
+        .collect();
+
+    let pb = ProgressBar::new(files.len() as u64);
+    pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+        .unwrap()
+        .progress_chars("#>-"));
+    let mut errors = 0;
+
+    for file in &files {
+        let relative_path = file.strip_prefix(input_dir)?;
+        let output_path = output_dir.join(relative_path).with_extension(output_ext);
         
-        if path.is_file() && path.extension().map_or(false, |e| e == input_ext) {
-            let relative_path = path.strip_prefix(input_dir)?;
-            let output_path = output_dir.join(relative_path).with_extension(output_ext);
-            
-            if let Some(parent) = output_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            
-            processor(path, &output_path).with_context(|| format!(
-                "Failed processing {}",
-                path.display()
-            ))?;
+        // Update progress bar with current file name
+        pb.set_message(
+            file.display()
+                .to_string()
+                .chars()
+                .take(90)
+                .collect::<String>(),
+        );
+        
+        // Create output directory if it doesn't exist
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed creating directory for {}", file.display()))?;
         }
+
+        // Process file with error handling
+        match processor(file, &output_path) {
+            Ok(_) => pb.inc(1),
+            Err(e) => {
+                pb.println(format!("❌ Error processing {}: {}", file.display(), e));
+                pb.inc(1);
+                errors += 1;
+            }
+        }
+
     }
+
+    pb.finish_with_message(format!(
+        "Completed processing {} files. with {} errors.",
+        files.len(),errors
+    ));
     Ok(())
 }
 

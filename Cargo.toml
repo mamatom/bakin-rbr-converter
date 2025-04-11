@@ -13,5 +13,6 @@ hex-literal = "1.0.0"
 leb128 = "0.2"
 serde = {version = "1.0.219",features = ["derive"]}
 serde_json = "1.0.140"
+indicatif = "0.17.11"
 
 
