@@ -353,6 +353,19 @@ enum SectionData {
         data3: u32
     },
 
+    #[br(pre_assert(code == 0x000D))]
+    SkillData{
+        name: SizedString,
+        unknown: u16,
+        data: u128,
+        description: SizedString,
+    },
+    #[br(pre_assert(code == 0x000B))]
+    JobData{
+        name: SizedString,
+    },
+
+
     #[br(pre_assert(true))]
     Unknown{}
 }
