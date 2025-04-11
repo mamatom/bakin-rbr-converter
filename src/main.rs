@@ -414,9 +414,10 @@ struct RbrFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[brw(magic = b"YUKAR")]
 struct RbrHeader {
-    #[brw(big)]
-    version: u16,
-    unknown: [u8;10],
+    header_length: u32,
+    data: u16,
+    #[br(count = header_length)]
+    data2: Vec<u8>,
 }
 
 fn validate_header<R: Read + Seek>(reader: &mut R, endian: Endian, _: ()) -> BinResult<RbrHeader> {
